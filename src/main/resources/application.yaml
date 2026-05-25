@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: codevision-backend
+
+  devtools:
+    restart:
+      enabled: false
+
+  task:
+    execution:
+      pool:
+        max-size: 10
+        queue-capacity: 20
+
+  mvc:
+    async:
+      request-timeout: 30000
+
+  datasource:
+    url: jdbc:postgresql://ep-solitary-thunder-ao753ue7-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+    username: neondb_owner
+    password: npg_wTyNiAY6XES2
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 30000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 500MB
+      max-request-size: 500MB
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8080
+  tomcat:
+    max-swallow-size: 500MB
+    max-http-form-post-size: 500MB
+    connection-timeout: 300000
+
+app:
+  jwt:
+    secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+    expiration-ms: 86400000
+    refresh-expiration-ms: 604800000
+  upload-dir: ./uploads/projects
+
+logging:
+  level:
+    com.codevision: DEBUG
+
+gemini:
+  api:
+    key: AIzaSyBjFZtMpjjsBrvomXWA6tQx6m4XR7MusR0
+    url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent
