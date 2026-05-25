@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
+import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -18,11 +19,10 @@ public class GitHubCloneService {
     @Value("${app.upload-dir:./uploads/projects}")
     private String uploadDir;
 
-    // Cache the git path after first detection
     private String gitPath = null;
 
     /**
-     * Clone GitHub repository
+     * Clone/download GitHub repository
      */
     public Path cloneRepo(String gitUrl, UUID projectId) {
         Path projectDir = Path.of(uploadDir).resolve(projectId.toString()).resolve("extracted");
@@ -30,137 +30,166 @@ public class GitHubCloneService {
         try {
             Files.createDirectories(projectDir);
             
-            // Find git dynamically
+            // Try Git first
             String gitCmd = findGit();
             
-            if (gitCmd == null) {
-                throw new RuntimeException(
-                    "Git is not installed. Please install Git from https://git-scm.com/downloads"
-                );
-            }
-            
-            log.info("🔄 Using git at: {}", gitCmd);
-            
-            // Clone using git
-           ProcessBuilder pb = new ProcessBuilder(
-    gitCmd, "clone", "--depth", "1", "--config", "core.longpaths=true", gitUrl, projectDir.toString()
-);
-            pb.redirectErrorStream(true);
-            
-            log.info("🔄 Cloning: {}", gitUrl);
-            Process process = pb.start();
-            
-            // Read output with timeout
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                    log.debug("[GIT] {}", line);
-                }
-            }
-            
-            boolean completed = process.waitFor(60, TimeUnit.SECONDS);
-            
-            if (!completed) {
-                process.destroyForcibly();
-                throw new RuntimeException("Git clone timed out after 60 seconds");
-            }
-            
-            int exitCode = process.exitValue();
-            
-            if (exitCode == 0) {
-                log.info("✅ Cloned successfully to: {}", projectDir);
-                return projectDir;
+            if (gitCmd != null) {
+                log.info("🔄 Cloning with Git: {}", gitUrl);
+                return cloneWithGit(gitCmd, gitUrl, projectDir);
             } else {
-                String error = output.toString();
-                log.error("Git clone failed: {}", error);
-                
-                if (error.contains("Repository not found") || error.contains("not found")) {
-                    throw new RuntimeException("Repository not found. Check the URL.");
-                } else if (error.contains("Permission denied") || error.contains("Authentication failed")) {
-                    throw new RuntimeException("Access denied. Repository may be private or requires authentication.");
-                } else if (error.contains("already exists")) {
-                    throw new RuntimeException("Project directory already exists.");
-                } else {
-                    throw new RuntimeException("Git clone failed: " + error.lines().limit(3).collect(java.util.stream.Collectors.joining(" ")));
-                }
+                // Fallback: Download ZIP
+                log.info("📦 Git not found, downloading ZIP instead");
+                return downloadAsZip(gitUrl, projectDir, projectId);
             }
-            
-        } catch (RuntimeException e) {
-            throw e;
         } catch (Exception e) {
             log.error("❌ Clone failed: {}", e.getMessage());
-            throw new RuntimeException("Clone failed: " + e.getMessage());
+            throw new RuntimeException("Failed to clone: " + e.getMessage());
         }
     }
 
     /**
-     * Find git executable dynamically
+     * Clone using Git command
+     */
+    private Path cloneWithGit(String gitCmd, String gitUrl, Path projectDir) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(
+            gitCmd, "clone", "--depth", "1", gitUrl, projectDir.toString()
+        );
+        pb.redirectErrorStream(true);
+        
+        Process process = pb.start();
+        boolean completed = process.waitFor(120, TimeUnit.SECONDS);
+        
+        if (!completed) {
+            process.destroyForcibly();
+            throw new RuntimeException("Git clone timed out");
+        }
+        
+        if (process.exitValue() == 0) {
+            log.info("✅ Cloned successfully");
+            return projectDir;
+        } else {
+            // Git failed, try ZIP fallback
+            log.warn("Git clone failed, trying ZIP download");
+            return downloadAsZip(gitUrl, projectDir, UUID.randomUUID());
+        }
+    }
+
+    /**
+     * Download repository as ZIP from GitHub
+     */
+    private Path downloadAsZip(String gitUrl, Path projectDir, UUID projectId) throws Exception {
+        // Convert to ZIP URL
+        String zipUrl = buildZipUrl(gitUrl);
+        log.info("📥 Downloading: {}", zipUrl);
+        
+        Path zipPath = Path.of(uploadDir).resolve(projectId.toString()).resolve("repo.zip");
+        Files.createDirectories(zipPath.getParent());
+        
+        // Download with progress
+        try (InputStream in = new URL(zipUrl).openStream()) {
+            Files.copy(in, zipPath, StandardCopyOption.REPLACE_EXISTING);
+            long size = Files.size(zipPath);
+            log.info("✅ Downloaded: {} bytes", size);
+            
+            if (size < 1000) {
+                throw new RuntimeException("Downloaded file too small, repository may not exist");
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Download failed. Check the URL or try a public repository.");
+        }
+        
+        // Extract ZIP
+        return extractZip(zipPath, projectDir);
+    }
+
+    /**
+     * Build GitHub ZIP download URL
+     */
+    private String buildZipUrl(String gitUrl) {
+        String url = gitUrl.replaceAll("/$", "").replace(".git", "");
+        
+        // https://github.com/user/repo → https://github.com/user/repo/archive/refs/heads/main.zip
+        if (url.contains("github.com")) {
+            return url + "/archive/refs/heads/main.zip";
+        }
+        
+        // GitLab: https://gitlab.com/user/repo/-/archive/main/repo-main.zip
+        if (url.contains("gitlab.com")) {
+            return url + "/-/archive/main/" + extractRepoName(url) + "-main.zip";
+        }
+        
+        return url + "/archive/refs/heads/main.zip";
+    }
+
+    /**
+     * Extract ZIP file
+     */
+    private Path extractZip(Path zipPath, Path extractDir) throws Exception {
+        log.info("📂 Extracting ZIP...");
+        
+        try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(zipPath.toFile())) {
+            var entries = zipFile.entries();
+            int count = 0;
+            
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                Path entryPath = extractDir.resolve(entry.getName());
+                
+                // Handle the wrapper folder (repo-main/)
+                if (entry.isDirectory()) {
+                    Files.createDirectories(entryPath);
+                } else {
+                    Files.createDirectories(entryPath.getParent());
+                    try (InputStream is = zipFile.getInputStream(entry)) {
+                        Files.copy(is, entryPath, StandardCopyOption.REPLACE_EXISTING);
+                        count++;
+                    }
+                }
+            }
+            log.info("✅ Extracted {} files", count);
+        }
+        
+        return extractDir;
+    }
+
+    /**
+     * Find Git executable
      */
     private String findGit() {
-        // Return cached path if already found
         if (gitPath != null && new File(gitPath).exists()) {
             return gitPath;
         }
         
-        // Try 1: Check system PATH
+        // Try system PATH
         try {
-            ProcessBuilder pb = new ProcessBuilder("git", "--version");
-            Process process = pb.start();
-            boolean ok = process.waitFor(3, TimeUnit.SECONDS) && process.exitValue() == 0;
-            if (ok) {
-                gitPath = "git";
-                log.info("✅ Found git in system PATH");
-                return gitPath;
-            }
+            new ProcessBuilder("git", "--version").start().waitFor(3, TimeUnit.SECONDS);
+            gitPath = "git";
+            return gitPath;
         } catch (Exception ignored) {}
         
-        // Try 2: Common Windows locations
-        List<String> possiblePaths = new ArrayList<>();
+        // Search common locations
+        String[] paths = {
+            "/usr/bin/git", "/usr/local/bin/git",
+            "C:\\Program Files\\Git\\bin\\git.exe",
+            System.getProperty("user.home") + "\\AppData\\Local\\Programs\\Git\\cmd\\git.exe"
+        };
         
-        // User's AppData
-        String userHome = System.getProperty("user.home");
-        possiblePaths.add(userHome + "\\AppData\\Local\\Programs\\Git\\cmd\\git.exe");
-        possiblePaths.add(userHome + "\\AppData\\Local\\Programs\\Git\\bin\\git.exe");
-        
-        // Program Files
-        possiblePaths.add("C:\\Program Files\\Git\\bin\\git.exe");
-        possiblePaths.add("C:\\Program Files\\Git\\cmd\\git.exe");
-        possiblePaths.add("C:\\Program Files (x86)\\Git\\bin\\git.exe");
-        possiblePaths.add("C:\\Program Files (x86)\\Git\\cmd\\git.exe");
-        
-        // Other drives
-        possiblePaths.add("D:\\Git\\bin\\git.exe");
-        possiblePaths.add("D:\\Program Files\\Git\\bin\\git.exe");
-        
-        // Check each path
-        for (String path : possiblePaths) {
-            File gitFile = new File(path);
-            if (gitFile.exists()) {
-                log.info("✅ Found git at: {}", path);
+        for (String path : paths) {
+            if (new File(path).exists()) {
                 gitPath = path;
                 return gitPath;
             }
         }
         
-        // Try 3: Search using where command (Windows)
-        try {
-            ProcessBuilder pb = new ProcessBuilder("where", "git");
-            Process process = pb.start();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line = reader.readLine();
-                if (line != null && !line.trim().isEmpty()) {
-                    log.info("✅ Found git via where: {}", line.trim());
-                    gitPath = line.trim();
-                    return gitPath;
-                }
-            }
-        } catch (Exception ignored) {}
-        
-        log.error("❌ Git not found in any location");
+        log.warn("Git not found, will use ZIP download");
         return null;
+    }
+
+    /**
+     * Extract repo name from URL
+     */
+    private String extractRepoName(String url) {
+        String[] parts = url.replace(".git", "").split("/");
+        return parts.length > 0 ? parts[parts.length - 1] : "repo";
     }
 }
