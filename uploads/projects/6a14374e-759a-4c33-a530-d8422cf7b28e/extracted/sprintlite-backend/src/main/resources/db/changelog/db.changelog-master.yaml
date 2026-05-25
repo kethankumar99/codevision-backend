@@ -1,5 +1,0 @@
-databaseChangeLog:
-  - changeSet:
-      id: 000-initial-setup
-      author: sprintlite
-      changes: []

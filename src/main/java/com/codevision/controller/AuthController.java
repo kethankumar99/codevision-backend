@@ -52,15 +52,12 @@ public class AuthController {
     })
     public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
         String requestId = generateRequestId("REG");
-        
-        log.info("📝 [{}] Registration request received for email: {}", requestId, request.getEmail());
+        log.info("📝 [{}] Registration request for: {}", requestId, request.getEmail());
         
         try {
             AuthResponse response = authService.register(request);
-            log.info("✅ [{}] User registered successfully - userId: {}", requestId, response.getUser().getId());
-            
+            log.info("✅ [{}] User registered: {}", requestId, response.getUser().getEmail());
             return buildSuccessResponse(response, "User registered successfully", HttpStatus.CREATED, requestId);
-            
         } catch (RuntimeException e) {
             log.error("❌ [{}] Registration failed: {}", requestId, e.getMessage());
             return buildErrorResponse(e.getMessage(), HttpStatus.BAD_REQUEST, requestId);
@@ -82,17 +79,14 @@ public class AuthController {
             description = "Invalid credentials"
         )
     })
-    public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
+   public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
         String requestId = generateRequestId("LOG");
-        
-        log.info("🔑 [{}] Login attempt for email: {}", requestId, request.getEmail());
+        log.info("🔑 [{}] Login attempt for: {}", requestId, request.getEmail());
         
         try {
             AuthResponse response = authService.login(request);
-            log.info("✅ [{}] Login successful - userId: {}", requestId, response.getUser().getId());
-            
+            log.info("✅ [{}] Login successful: {}", requestId, response.getUser().getEmail());
             return buildSuccessResponse(response, "Login successful", HttpStatus.OK, requestId);
-            
         } catch (RuntimeException e) {
             log.warn("❌ [{}] Login failed: {}", requestId, e.getMessage());
             return buildErrorResponse(e.getMessage(), HttpStatus.UNAUTHORIZED, requestId);
